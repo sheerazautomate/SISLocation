@@ -21,13 +21,18 @@ GET /transfer/show_google_map_school/10669
 
 **Phase 1 is fully automated.** Commit your base file, then run the workflow.
 
-0. **Install the workflow** (one time). The Arena GitHub App isn't granted the
-   `workflows` permission, so the workflow file ships at `ci/fetch-dtms.yml.txt`
-   and you install it with your own credentials:
+0. **Install the workflow** (one time, from your machine). The Arena GitHub App
+   isn't granted the `workflows` permission — both `git push` and the REST API
+   return 403 for `.github/workflows/*` — so the file ships at
+   `ci/fetch-dtms.yml.txt` and you install it with your own credentials:
    ```bash
    ./ci/install-workflow.sh
    ```
-1. Commit the base file so the runner can read it:
+   It installs onto the **default branch** (`main`), because GitHub only shows the
+   "Run workflow" button for workflows present there. It then returns you to your
+   current branch. Use `--here` to install onto the current branch instead.
+
+1. Commit the base file to the branch you'll run from, so the runner can read it:
    ```bash
    git add -f "data/Base Schools.json"
    git commit -m "data: add base schools file"
@@ -35,6 +40,14 @@ GET /transfer/show_google_map_school/10669
    ```
 2. GitHub → **Actions** → **Phase 1 - Fetch DTMS IDs** → **Run workflow**.
 3. Leave the defaults (10 shards × 6 workers) or tune them, then start it.
+
+Or from the CLI:
+
+```bash
+gh workflow run fetch-dtms.yml -f limit=20    # smoke test first
+gh workflow run fetch-dtms.yml                # full 38K run
+gh run watch $(gh run list --workflow=fetch-dtms.yml -L1 --json databaseId -q '.[0].databaseId')
+```
 
 **Smoke-test first:** set `limit` to `20` — each shard does 20 codes, finishing in
 under a minute, so you can confirm everything works before the full 38K run.
