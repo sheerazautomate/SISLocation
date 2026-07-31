@@ -1,0 +1,249 @@
+name: Phase 1 - Fetch DTMS IDs
+
+# Resolves district / tehsil / markaz / school IDs for every EMIS code in the
+# base file, sharded across parallel runners so 38K lookups finish in ~minutes
+# instead of hours. Each shard caches its partial JSONL, so a re-run resumes
+# rather than restarting.
+
+on:
+  workflow_dispatch:
+    inputs:
+      base_file:
+        description: "Path to the base schools file (committed in the repo)"
+        required: true
+        default: "data/Base Schools.json"
+      shards:
+        description: "Number of parallel runners (1-20)"
+        required: true
+        default: "10"
+      workers:
+        description: "Concurrent requests per runner (keep modest - gov server)"
+        required: true
+        default: "6"
+      delay:
+        description: "Random 0..N second jitter before each request"
+        required: true
+        default: "0.15"
+      emis_field:
+        description: "EMIS column name (blank = auto-detect)"
+        required: false
+        default: ""
+      limit:
+        description: "Cap rows per shard (0 = no cap). Use for a smoke test."
+        required: false
+        default: "0"
+      retry_errors:
+        description: "Re-attempt rows previously recorded as errors"
+        type: boolean
+        default: false
+      commit_results:
+        description: "Commit combined results back to this branch"
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+
+concurrency:
+  group: fetch-dtms-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  prep:
+    name: Plan shards
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+      shards: ${{ steps.plan.outputs.shards }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Validate inputs and build shard matrix
+        id: plan
+        env:
+          BASE_FILE: ${{ inputs.base_file }}
+          SHARDS: ${{ inputs.shards }}
+          EMIS_FIELD: ${{ inputs.emis_field }}
+        run: |
+          python - <<'PY' >> "$GITHUB_OUTPUT"
+          import json, os, sys
+          sys.path.insert(0, ".")
+          from sis.common import extract_emis_codes
+
+          base = os.environ["BASE_FILE"]
+          if not os.path.exists(base):
+              sys.exit(
+                  f"::error::Base file '{base}' not found in the repo.\n"
+                  "Commit it (e.g. data/Base Schools.json) and re-run."
+              )
+          try:
+              shards = int(os.environ["SHARDS"])
+          except ValueError:
+              sys.exit("::error::'shards' must be an integer")
+          if not 1 <= shards <= 20:
+              sys.exit("::error::'shards' must be between 1 and 20")
+
+          field = os.environ.get("EMIS_FIELD") or None
+          codes, used = extract_emis_codes(base, field)
+          if not codes:
+              sys.exit("::error::No EMIS codes found in the base file")
+
+          shards = min(shards, len(codes))
+          print(f"matrix={json.dumps(list(range(shards)))}")
+          print(f"shards={shards}")
+          print(
+              f"::notice::{len(codes)} unique EMIS codes (field '{used}') "
+              f"across {shards} shard(s) ~ {-(-len(codes)//shards)} per shard",
+              file=sys.stderr,
+          )
+          PY
+
+      - name: Run unit tests
+        run: python run.py test
+
+  fetch:
+    name: Shard ${{ matrix.shard }}
+    needs: prep
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    strategy:
+      fail-fast: false
+      max-parallel: 10
+      matrix:
+        shard: ${{ fromJson(needs.prep.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - run: pip install -r requirements.txt
+
+      - name: Restore partial progress
+        uses: actions/cache@v4
+        with:
+          path: parts
+          key: dtms-${{ needs.prep.outputs.shards }}-${{ matrix.shard }}-${{ github.run_id }}
+          restore-keys: |
+            dtms-${{ needs.prep.outputs.shards }}-${{ matrix.shard }}-
+
+      - name: Fetch DTMS IDs for this shard
+        run: |
+          mkdir -p parts
+          OUT="parts/ids-${{ needs.prep.outputs.shards }}-${{ matrix.shard }}.jsonl"
+          ARGS=(
+            -i "${{ inputs.base_file }}"
+            -o "$OUT"
+            -w "${{ inputs.workers }}"
+            --delay "${{ inputs.delay }}"
+            --shard "${{ matrix.shard }}"
+            --shards "${{ needs.prep.outputs.shards }}"
+          )
+          if [ -n "${{ inputs.emis_field }}" ]; then
+            ARGS+=(--emis-field "${{ inputs.emis_field }}")
+          fi
+          if [ "${{ inputs.limit }}" != "0" ] && [ -n "${{ inputs.limit }}" ]; then
+            ARGS+=(--limit "${{ inputs.limit }}")
+          fi
+          if [ "${{ inputs.retry_errors }}" = "true" ]; then
+            ARGS+=(--retry-errors)
+          fi
+          python run.py ids "${ARGS[@]}"
+
+      - name: Upload shard results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dtms-part-${{ matrix.shard }}
+          path: parts/*.jsonl
+          retention-days: 14
+          if-no-files-found: warn
+
+  combine:
+    name: Combine and report
+    needs: [prep, fetch]
+    if: always() && needs.prep.result == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Download all shard artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: dtms-part-*
+          path: parts
+          merge-multiple: true
+
+      - name: Combine shards
+        run: |
+          mkdir -p data
+          python -m sis.combine 'parts/**/*.jsonl' -k emis_code -o data/school_ids.jsonl
+
+      - name: Write summary
+        env:
+          BASE_FILE: ${{ inputs.base_file }}
+        run: |
+          python - <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import json, os, sys
+          sys.path.insert(0, ".")
+          from sis.common import extract_emis_codes
+
+          rows = [json.loads(l) for l in open("data/school_ids.jsonl", encoding="utf-8") if l.strip()]
+          counts = {}
+          for r in rows:
+              counts[r.get("status", "?")] = counts.get(r.get("status", "?"), 0) + 1
+          total = len(rows)
+
+          try:
+              expected = len(extract_emis_codes(os.environ["BASE_FILE"])[0])
+          except SystemExit:
+              expected = 0
+
+          print("## Phase 1 - DTMS ID extraction\n")
+          print(f"- Base file EMIS codes: **{expected}**")
+          print(f"- Records fetched: **{total}**")
+          if expected:
+              print(f"- Coverage: **{total / expected:.1%}**")
+          print("\n| status | count | share |")
+          print("| --- | ---: | ---: |")
+          for st, n in sorted(counts.items(), key=lambda kv: -kv[1]):
+              print(f"| `{st}` | {n} | {n / total:.1%} |" if total else f"| `{st}` | {n} | - |")
+
+          missing = expected - total
+          if missing > 0:
+              print(f"\n> **{missing} codes still unprocessed** - re-run this workflow to resume.")
+          if counts.get("error"):
+              print("\n> Some rows errored. Re-run with **retry_errors** enabled.")
+          PY
+
+      - name: Upload combined dataset
+        uses: actions/upload-artifact@v4
+        with:
+          name: school_ids
+          path: data/school_ids.jsonl
+          retention-days: 90
+
+      - name: Commit results to branch
+        if: inputs.commit_results
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -f data/school_ids.jsonl
+          if git diff --staged --quiet; then
+            echo "No changes to commit."
+          else
+            n=$(wc -l < data/school_ids.jsonl)
+            git commit -m "chore(data): DTMS IDs for ${n} schools [skip ci]"
+            git pull --rebase --autostash origin "${GITHUB_REF_NAME}" || true
+            git push origin "HEAD:${GITHUB_REF_NAME}"
+          fi
