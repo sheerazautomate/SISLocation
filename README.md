@@ -21,6 +21,12 @@ GET /transfer/show_google_map_school/10669
 
 **Phase 1 is fully automated.** Commit your base file, then run the workflow.
 
+0. **Install the workflow** (one time). The Arena GitHub App isn't granted the
+   `workflows` permission, so the workflow file ships at `ci/fetch-dtms.yml.txt`
+   and you install it with your own credentials:
+   ```bash
+   ./ci/install-workflow.sh
+   ```
 1. Commit the base file so the runner can read it:
    ```bash
    git add -f "data/Base Schools.json"
