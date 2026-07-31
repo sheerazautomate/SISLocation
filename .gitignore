@@ -1,0 +1,12 @@
+# Generated pipeline artifacts (large; regenerate with run.py)
+data/*.jsonl
+data/schools_final.*
+data/sample_*
+*.log
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
