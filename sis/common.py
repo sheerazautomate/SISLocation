@@ -252,6 +252,14 @@ def iter_records(path: str) -> Iterator[Any]:
 
 def _flatten_json(data: Any) -> Iterator[Any]:
     if isinstance(data, list):
+                # Support array-of-arrays (e.g. [["ATTOCK", ..., "37130015", ...], ...])
+        if data and isinstance(data[0], list):
+            for row in data:
+                if isinstance(row, list):
+                    yield row
+                else:
+                    yield row
+            return
         yield from data
     elif isinstance(data, dict):
         # Common wrapper shapes: {"data": [...]}, {"schools": [...]}, {...}
@@ -265,26 +273,48 @@ def _flatten_json(data: Any) -> Iterator[Any]:
 
 
 def detect_emis_field(records: Iterable[Any]) -> str | None:
-    """Guess which dict key holds the EMIS code by scoring a sample of records."""
-    sample = [r for r in list(records)[:200] if isinstance(r, dict)]
-    if not sample:
-        return None
-    keys = list(sample[0].keys())
-    best, best_score = None, -1.0
-    for key in keys:
-        norm = key.strip().lower().replace(" ", "_")
-        hits = sum(1 for r in sample if EMIS_RE.match(str(r.get(key, "")).strip()))
-        ratio = hits / len(sample)
-        if ratio < 0.5:
-            continue
-        score = ratio
-        if any(h in norm for h in _EMIS_KEY_HINTS):
-            score += 1.0
-        if norm in ("emis", "emis_code", "s_emis_code"):
-            score += 1.0
-        if score > best_score:
-            best, best_score = key, score
-    return best
+        """Guess which dict key (or column index for list records) holds the EMIS code."""
+    records = list(records)[:200]
+    dict_sample = [r for r in records if isinstance(r, dict)]
+    list_sample = [r for r in records if isinstance(r, (list, tuple))]
+
+    # --- Dict records ---
+    if dict_sample:
+        keys = list(dict_sample[0].keys())
+        best, best_score = None, -1.0
+        for key in keys:
+            norm = key.strip().lower().replace(" ", "_")
+            hits = sum(1 for r in dict_sample if EMIS_RE.match(str(r.get(key, "")).strip()))
+            ratio = hits / len(dict_sample)
+            if ratio < 0.5:
+                continue
+            score = ratio
+            if any(h in norm for h in _EMIS_KEY_HINTS):
+                score += 1.0
+            if norm in ("emis", "emis_code", "s_emis_code"):
+                score += 1.0
+            if score > best_score:
+                best, best_score = key, score
+        if best:
+            return best
+
+    # --- List / array-of-arrays records ---
+    if list_sample:
+        # Try to find which column contains valid EMIS codes
+        max_cols = max((len(r) for r in list_sample), default=0)
+        best_idx, best_score = None, -1.0
+        for idx in range(max_cols):
+            hits = sum(
+                1 for r in list_sample
+                if len(r) > idx and EMIS_RE.match(str(r[idx]).strip())
+            )
+            ratio = hits / len(list_sample) if list_sample else 0
+            if ratio >= 0.5 and ratio > best_score:
+                best_idx, best_score = idx, ratio
+        if best_idx is not None:
+            return str(best_idx)  # return index as string so caller can treat it specially
+
+    return None
 
 
 def add_shard_args(ap) -> None:
