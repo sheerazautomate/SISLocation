@@ -200,3 +200,47 @@ class TestResumeAndMerge(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class TestSharding(unittest.TestCase):
+    def test_shards_are_disjoint_and_complete(self):
+        from sis.common import select_shard
+
+        for total in (0, 1, 7, 38000):
+            items = list(range(total))
+            for shards in (1, 3, 8, 20):
+                parts = [select_shard(items, i, shards) for i in range(shards)]
+                flat = [x for p in parts for x in p]
+                self.assertEqual(sorted(flat), items, f"total={total} shards={shards}")
+                self.assertEqual(len(flat), len(set(flat)), "shards overlap")
+                sizes = [len(p) for p in parts]
+                self.assertLessEqual(max(sizes) - min(sizes), 1, "uneven shards")
+
+    def test_shard_bounds_validated(self):
+        from sis.common import select_shard
+
+        with self.assertRaises(SystemExit):
+            select_shard([1, 2, 3], 5, 3)
+
+    def test_combine_dedups_and_prefers_success(self):
+        from sis.combine import combine
+
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        d = tmp.name
+        with open(os.path.join(d, "ids-0.jsonl"), "w", encoding="utf-8") as fh:
+            fh.write(json.dumps({"emis_code": "1", "status": "error"}) + "\n")
+            fh.write(json.dumps({"emis_code": "2", "status": "ok", "school_id": "22"}) + "\n")
+        with open(os.path.join(d, "ids-1.jsonl"), "w", encoding="utf-8") as fh:
+            fh.write(json.dumps({"emis_code": "1", "status": "ok", "school_id": "11"}) + "\n")
+            fh.write(json.dumps({"emis_code": "3", "status": "missing"}) + "\n")
+
+        out = os.path.join(d, "all.jsonl")
+        _, counts = combine([os.path.join(d, "ids-*.jsonl")], "emis_code", out)
+        recs = {json.loads(l)["emis_code"]: json.loads(l)
+                for l in open(out, encoding="utf-8") if l.strip()}
+        self.assertEqual(len(recs), 3)
+        # the successful retry must win over the earlier error
+        self.assertEqual(recs["1"]["status"], "ok")
+        self.assertEqual(recs["1"]["school_id"], "11")
+        self.assertEqual(counts["ok"], 2)

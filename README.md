@@ -17,7 +17,60 @@ GET /transfer/show_google_map_school/10669
 -> 302 Location: https://www.google.com/maps?saddr=30.84132237,71.2246089
 ```
 
-## Quick start
+## Run it on GitHub Actions (no local machine needed)
+
+**Phase 1 is fully automated.** Commit your base file, then run the workflow.
+
+1. Commit the base file so the runner can read it:
+   ```bash
+   git add -f "data/Base Schools.json"
+   git commit -m "data: add base schools file"
+   git push
+   ```
+2. GitHub → **Actions** → **Phase 1 - Fetch DTMS IDs** → **Run workflow**.
+3. Leave the defaults (10 shards × 6 workers) or tune them, then start it.
+
+**Smoke-test first:** set `limit` to `20` — each shard does 20 codes, finishing in
+under a minute, so you can confirm everything works before the full 38K run.
+
+### What it does
+
+`prep` validates the base file and builds the shard matrix → `fetch` runs N runners
+in parallel, each on a **disjoint** slice → `combine` merges the shards, dedupes,
+writes a summary table, uploads `school_ids.jsonl` as an artifact, and (optionally)
+commits it back to the branch.
+
+38K codes across 10 shards is ~3,800 lookups each — roughly 10–20 minutes per shard
+rather than hours in a single job.
+
+### Inputs
+
+| Input | Default | Notes |
+| --- | --- | --- |
+| `base_file` | `data/Base Schools.json` | Must be committed to the repo |
+| `shards` | `10` | Parallel runners, 1–20 (auto-clamped to the code count) |
+| `workers` | `6` | Concurrency **per runner** — total load is `shards × workers` |
+| `delay` | `0.15` | Random jitter per request |
+| `emis_field` | *(blank)* | Auto-detected if blank |
+| `limit` | `0` | Cap rows per shard — use for smoke tests |
+| `retry_errors` | off | Re-attempt previously errored rows |
+| `commit_results` | on | Commit `data/school_ids.jsonl` back to the branch |
+
+> **Be careful with total load.** `shards × workers` is what the SIS server actually
+> sees. The defaults mean ~60 concurrent requests. If you see errors climbing in the
+> job logs, lower `workers` before raising `shards`.
+
+### Resuming and retrying
+
+Every shard caches its partial JSONL and results are committed, so **re-running the
+workflow picks up where it left off** — already-fetched codes are skipped. If a shard
+times out or a runner dies, just run it again. To repair errored rows, re-run with
+`retry_errors` enabled.
+
+Download the result from the run's **Artifacts** section (`school_ids`), or pull the
+branch if `commit_results` was on.
+
+## Quick start (local)
 
 ```bash
 pip install -r requirements.txt
@@ -105,8 +158,18 @@ The `.geojson` contains only rows with real coordinates, ready to drop into QGIS
 ## Tests
 
 ```bash
-python run.py test     # 19 offline tests, no network needed
+python run.py test     # 22 offline tests, no network needed
 ```
+
+## Combining shards manually
+
+```bash
+python -m sis.combine 'parts/**/*.jsonl' -k emis_code -o data/school_ids.jsonl
+python -m sis.combine 'parts/**/*.jsonl' -k school_id -o data/school_coords.jsonl
+```
+
+Duplicate keys resolve to the best record (`ok` > `missing` > `error`), so a
+successful retry always supersedes an earlier failure.
 
 ## Notes on scale
 

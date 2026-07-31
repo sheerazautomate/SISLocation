@@ -287,6 +287,31 @@ def detect_emis_field(records: Iterable[Any]) -> str | None:
     return best
 
 
+def add_shard_args(ap) -> None:
+    """Register --shard/--shards on an ArgumentParser."""
+    ap.add_argument("--shards", type=int, default=1,
+                    help="Total number of shards (parallel runners)")
+    ap.add_argument("--shard", type=int, default=0,
+                    help="0-based index of this shard")
+
+
+def select_shard(items: list[Any], shard: int, shards: int) -> list[Any]:
+    """Deterministic contiguous slice so each runner owns a disjoint block.
+
+    Contiguous (not round-robin) keeps each shard's output file a clean range,
+    which makes partial results easier to reason about and merge.
+    """
+    if shards <= 1:
+        return items
+    if not (0 <= shard < shards):
+        raise SystemExit(f"--shard must be in [0,{shards - 1}], got {shard}")
+    total = len(items)
+    per, rem = divmod(total, shards)
+    start = shard * per + min(shard, rem)
+    end = start + per + (1 if shard < rem else 0)
+    return items[start:end]
+
+
 def extract_emis_codes(path: str, field: str | None = None) -> tuple[list[str], str]:
     """Return (unique ordered EMIS codes, field name used)."""
     records = list(iter_records(path))

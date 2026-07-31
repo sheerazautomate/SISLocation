@@ -1,8 +1,13 @@
-# Generated pipeline artifacts (large; regenerate with run.py)
-data/*.jsonl
-data/schools_final.*
+# Local scratch / shard parts (CI uploads these as artifacts instead)
+parts/
 data/sample_*
+data/schools_final.*
 *.log
+
+# Committed by CI on purpose (do NOT ignore):
+#   data/Base Schools.json   <- input, must be in the repo for Actions
+#   data/school_ids.jsonl    <- phase 1 output
+#   data/school_coords.jsonl <- phase 2 output
 
 # Python
 __pycache__/

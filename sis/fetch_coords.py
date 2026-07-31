@@ -17,7 +17,16 @@ import re
 import sys
 from typing import Any
 
-from .common import BASE_URL, JsonlStore, Progress, fetch, iter_records, run_pool
+from .common import (
+    BASE_URL,
+    JsonlStore,
+    Progress,
+    add_shard_args,
+    fetch,
+    iter_records,
+    run_pool,
+    select_shard,
+)
 
 ENDPOINT = BASE_URL + "/transfer/show_google_map_school/{sid}"
 
@@ -165,6 +174,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--retry-missing", action="store_true",
                     help="Also re-attempt rows with no coordinates")
     ap.add_argument("--insecure", action="store_true")
+    add_shard_args(ap)
     args = ap.parse_args(argv)
 
     if args.insecure:
@@ -180,6 +190,12 @@ def main(argv: list[str] | None = None) -> int:
 
     rows = load_id_rows(args.input)
     sys.stderr.write(f"Loaded {len(rows)} school IDs\n")
+
+    if args.shards > 1:
+        rows = select_shard(rows, args.shard, args.shards)
+        sys.stderr.write(
+            f"Shard {args.shard + 1}/{args.shards}: {len(rows)} schools in this slice\n"
+        )
 
     store = JsonlStore(args.output, key="school_id")
     done = store.load_done()

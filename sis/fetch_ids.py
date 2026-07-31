@@ -19,9 +19,11 @@ from .common import (
     BASE_URL,
     JsonlStore,
     Progress,
+    add_shard_args,
     extract_emis_codes,
     fetch,
     run_pool,
+    select_shard,
 )
 
 ENDPOINT = BASE_URL + "/dashboard/get_dtms_by_emis_code?s_id_emis_code={emis}"
@@ -93,6 +95,7 @@ def main(argv: list[str] | None = None) -> int:
                     help="Re-attempt rows previously recorded as errors")
     ap.add_argument("--insecure", action="store_true",
                     help="Skip TLS verification (server has a flaky chain)")
+    add_shard_args(ap)
     args = ap.parse_args(argv)
 
     if args.insecure:
@@ -106,6 +109,12 @@ def main(argv: list[str] | None = None) -> int:
 
     codes, field = extract_emis_codes(args.input, args.emis_field)
     sys.stderr.write(f"Loaded {len(codes)} unique EMIS codes (field: {field})\n")
+
+    if args.shards > 1:
+        codes = select_shard(codes, args.shard, args.shards)
+        sys.stderr.write(
+            f"Shard {args.shard + 1}/{args.shards}: {len(codes)} codes in this slice\n"
+        )
 
     store = JsonlStore(args.output, key="emis_code")
     done = store.load_done()
