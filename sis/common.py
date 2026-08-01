@@ -252,14 +252,8 @@ def iter_records(path: str) -> Iterator[Any]:
 
 def _flatten_json(data: Any) -> Iterator[Any]:
     if isinstance(data, list):
-                # Support array-of-arrays (e.g. [["ATTOCK", ..., "37130015", ...], ...])
-        if data and isinstance(data[0], list):
-            for row in data:
-                if isinstance(row, list):
-                    yield row
-                else:
-                    yield row
-            return
+        # Support array-of-arrays (e.g. [["ATTOCK", ..., "37130015", ...], ...])
+        # as well as a plain array of objects/scalars - both are yielded row by row.
         yield from data
     elif isinstance(data, dict):
         # Common wrapper shapes: {"data": [...]}, {"schools": [...]}, {...}
@@ -273,7 +267,7 @@ def _flatten_json(data: Any) -> Iterator[Any]:
 
 
 def detect_emis_field(records: Iterable[Any]) -> str | None:
-        """Guess which dict key (or column index for list records) holds the EMIS code."""
+    """Guess which dict key (or column index for list records) holds the EMIS code."""
     records = list(records)[:200]
     dict_sample = [r for r in records if isinstance(r, dict)]
     list_sample = [r for r in records if isinstance(r, (list, tuple))]
@@ -351,6 +345,20 @@ def extract_emis_codes(path: str, field: str | None = None) -> tuple[list[str], 
     if isinstance(records[0], (str, int)):
         codes = [str(r).strip() for r in records]
         used = "<scalar>"
+    elif isinstance(records[0], (list, tuple)):
+        used = field or detect_emis_field(records)
+        if not used:
+            raise SystemExit(
+                "Could not auto-detect the EMIS column in this array-of-arrays file.\n"
+                "Pass --emis-field with a 0-based column index."
+            )
+        try:
+            idx = int(used)
+        except ValueError:
+            raise SystemExit(
+                f"--emis-field must be a column index for array-of-arrays input, got {used!r}"
+            )
+        codes = [str(r[idx]).strip() if len(r) > idx else "" for r in records]
     else:
         used = field or detect_emis_field(records)
         if not used:
@@ -368,4 +376,9 @@ def extract_emis_codes(path: str, field: str | None = None) -> tuple[list[str], 
         if c and EMIS_RE.match(c) and c not in seen:
             seen.add(c)
             out.append(c)
+    if not out:
+        raise SystemExit(
+            f"Found records in {path} but none looked like a 6-10 digit EMIS code "
+            f"in field/column {used!r}. Pass --emis-field to point at the right one."
+        )
     return out, used

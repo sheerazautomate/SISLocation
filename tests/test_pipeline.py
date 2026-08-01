@@ -198,10 +198,6 @@ class TestResumeAndMerge(unittest.TestCase):
         self.assertEqual(gj["features"][0]["geometry"]["coordinates"], [71.2246089, 30.84132237])
 
 
-if __name__ == "__main__":
-    unittest.main(verbosity=2)
-
-
 class TestSharding(unittest.TestCase):
     def test_shards_are_disjoint_and_complete(self):
         from sis.common import select_shard
@@ -244,3 +240,43 @@ class TestSharding(unittest.TestCase):
         self.assertEqual(recs["1"]["status"], "ok")
         self.assertEqual(recs["1"]["school_id"], "11")
         self.assertEqual(counts["ok"], 2)
+
+
+class TestArrayOfArrays(unittest.TestCase):
+    """Regression coverage for the array-of-arrays base file (no header row) -
+    the shape of the real committed data/Base Schools.json export."""
+
+    def _write(self, name, content):
+        path = os.path.join(self.tmp.name, name)
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(content)
+        return path
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_extract_emis_codes_from_array_of_arrays(self):
+        p = self._write("b.json", json.dumps([
+            ["ATTOCK", "PINDI GHEB", "37130015", "GGHS PINDI GHEB"],
+            ["ATTOCK", "PINDI GHEB", "37110028", "GGPS X"],
+        ]))
+        codes, field = extract_emis_codes(p)
+        self.assertEqual(codes, ["37130015", "37110028"])
+        self.assertEqual(field, "2")
+
+    def test_merge_from_array_of_arrays(self):
+        base = self._write("b.json", json.dumps([
+            ["ATTOCK", "PINDI GHEB", "37130015", "GGHS PINDI GHEB"],
+        ]))
+        rows = merge.build_rows(base, "", "")
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["emis_code"], "37130015")
+        self.assertEqual(rows[0]["col_0"], "ATTOCK")
+        self.assertNotIn("col_2", rows[0])  # the EMIS column itself isn't duplicated as an extra
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2)

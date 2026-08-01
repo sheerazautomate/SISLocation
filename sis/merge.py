@@ -41,13 +41,24 @@ def build_rows(base: str | None, ids_path: str, coords_path: str,
     rows: list[dict[str, Any]] = []
     if base and os.path.exists(base):
         records = list(iter_records(base))
+        is_dict_records = bool(records) and isinstance(records[0], dict)
+        is_list_records = bool(records) and isinstance(records[0], (list, tuple))
         field = emis_field or (
-            detect_emis_field(records) if records and isinstance(records[0], dict) else None
+            detect_emis_field(records) if (is_dict_records or is_list_records) else None
         )
+        idx: int | None = None
+        if is_list_records and field is not None:
+            try:
+                idx = int(field)
+            except ValueError:
+                idx = None  # user passed a dict-style field name for list records
         for rec in records:
             if isinstance(rec, dict):
                 emis = str(rec.get(field, "")).strip().split(".")[0] if field else ""
                 extra = {k: v for k, v in rec.items() if k != field}
+            elif isinstance(rec, (list, tuple)) and idx is not None:
+                emis = str(rec[idx]).strip().split(".")[0] if len(rec) > idx else ""
+                extra = {f"col_{i}": v for i, v in enumerate(rec) if i != idx}
             else:
                 emis, extra = str(rec).strip(), {}
             if not emis:
