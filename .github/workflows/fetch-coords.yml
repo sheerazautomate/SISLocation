@@ -1,0 +1,246 @@
+name: Phase 2 - Fetch School Coordinates
+
+on:
+  workflow_dispatch:
+    inputs:
+      ids_file:
+        description: "Committed phase-1 IDs file"
+        required: true
+        default: "data/school_ids.jsonl"
+      base_file:
+        description: "Committed base schools file for final exports"
+        required: true
+        default: "data/Base Schools.json"
+      shards:
+        description: "Parallel runners (1-20, at most 10 active)"
+        required: true
+        default: "10"
+      workers:
+        description: "Concurrent requests per runner (1-16; keep modest)"
+        required: true
+        default: "4"
+      delay:
+        description: "Random 0..N second jitter before each request"
+        required: true
+        default: "0.25"
+      limit:
+        description: "Pending schools per shard (0 = all, 20 = smoke test)"
+        required: true
+        default: "0"
+      emis_field:
+        description: "EMIS column for merge (blank = auto-detect)"
+        required: false
+        default: ""
+      retry_errors:
+        description: "Re-attempt failed coordinate lookups"
+        type: boolean
+        default: false
+      retry_missing:
+        description: "Re-attempt schools with no stored coordinates"
+        type: boolean
+        default: false
+      commit_results:
+        description: "Commit coordinates to this branch (exports remain artifacts)"
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fetch-coords-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  prep:
+    name: Validate and plan
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+      shards: ${{ steps.plan.outputs.shards }}
+      digest: ${{ steps.plan.outputs.digest }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - run: pip install -r requirements.txt
+
+      - name: Run offline tests
+        run: python run.py test
+
+      - name: Plan shards
+        id: plan
+        env:
+          IDS_FILE: ${{ inputs.ids_file }}
+          BASE_FILE: ${{ inputs.base_file }}
+          SHARDS: ${{ inputs.shards }}
+          WORKERS: ${{ inputs.workers }}
+          DELAY: ${{ inputs.delay }}
+          LIMIT: ${{ inputs.limit }}
+        run: |
+          python -m sis.coords_ci plan \
+            --ids "$IDS_FILE" --base "$BASE_FILE" \
+            --shards "$SHARDS" --workers "$WORKERS" \
+            --delay "$DELAY" --limit "$LIMIT" >> "$GITHUB_OUTPUT"
+
+  fetch:
+    name: Coordinates shard ${{ matrix.shard }}
+    needs: prep
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    strategy:
+      fail-fast: false
+      max-parallel: 10
+      matrix:
+        shard: ${{ fromJson(needs.prep.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - run: pip install -r requirements.txt
+
+      - name: Restore partial progress
+        id: cache
+        uses: actions/cache/restore@v4
+        with:
+          path: parts
+          key: coords-v1-${{ github.ref_name }}-${{ needs.prep.outputs.digest }}-${{ needs.prep.outputs.shards }}-${{ matrix.shard }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            coords-v1-${{ github.ref_name }}-${{ needs.prep.outputs.digest }}-${{ needs.prep.outputs.shards }}-${{ matrix.shard }}-
+
+      - name: Seed checkpoint from committed and cached coordinates
+        env:
+          IDS_FILE: ${{ inputs.ids_file }}
+          SHARD: ${{ matrix.shard }}
+          SHARDS: ${{ needs.prep.outputs.shards }}
+        run: |
+          python -m sis.coords_ci seed --ids "$IDS_FILE" \
+            --output "parts/coords-$SHARD.jsonl" --shard "$SHARD" --shards "$SHARDS"
+
+      - name: Fetch coordinates (do not follow into Google)
+        # Leave time for checkpoint/artifact steps before the job deadline.
+        timeout-minutes: 330
+        env:
+          IDS_FILE: ${{ inputs.ids_file }}
+          WORKERS: ${{ inputs.workers }}
+          DELAY: ${{ inputs.delay }}
+          LIMIT: ${{ inputs.limit }}
+          SHARD: ${{ matrix.shard }}
+          SHARDS: ${{ needs.prep.outputs.shards }}
+          RETRY_ERRORS: ${{ inputs.retry_errors }}
+          RETRY_MISSING: ${{ inputs.retry_missing }}
+        run: |
+          ARGS=(-i "$IDS_FILE" -o "parts/coords-$SHARD.jsonl"
+                -w "$WORKERS" --delay "$DELAY" --limit "$LIMIT"
+                --shard "$SHARD" --shards "$SHARDS")
+          if [ "$RETRY_ERRORS" = "true" ]; then ARGS+=(--retry-errors); fi
+          if [ "$RETRY_MISSING" = "true" ]; then ARGS+=(--retry-missing); fi
+          python run.py coords "${ARGS[@]}"
+
+      - name: Save partial progress even on failure
+        if: always() && steps.cache.outputs.cache-primary-key != ''
+        uses: actions/cache/save@v4
+        with:
+          path: parts
+          key: ${{ steps.cache.outputs.cache-primary-key }}
+
+      - name: Upload shard results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          # Preserve previous attempts even if this attempt restores an older cache.
+          name: coords-part-${{ matrix.shard }}-attempt-${{ github.run_attempt }}
+          path: parts/coords-*.jsonl
+          retention-days: 14
+          if-no-files-found: warn
+
+  combine:
+    name: Combine, merge and report
+    needs: [prep, fetch]
+    if: always() && needs.prep.result == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - run: pip install -r requirements.txt
+
+      - name: Download shard artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: coords-part-*
+          path: parts
+          merge-multiple: false
+
+      - name: Combine baseline and shards, create exports and summary
+        env:
+          IDS_FILE: ${{ inputs.ids_file }}
+          BASE_FILE: ${{ inputs.base_file }}
+          EMIS_FIELD: ${{ inputs.emis_field }}
+          FETCH_RESULT: ${{ needs.fetch.result }}
+        run: |
+          if [ "$FETCH_RESULT" != "success" ]; then
+            echo "> **Some shards did not finish.** Available progress is preserved; re-run to resume." >> "$GITHUB_STEP_SUMMARY"
+          fi
+          python -m sis.coords_ci finalize --ids "$IDS_FILE" --base "$BASE_FILE" \
+            --emis-field "$EMIS_FIELD" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload coordinates and final exports
+        uses: actions/upload-artifact@v4
+        with:
+          name: school_locations
+          overwrite: true
+          path: |
+            data/school_coords.jsonl
+            data/schools_final.json
+            data/schools_final.csv
+            data/schools_final.geojson
+          retention-days: 90
+          if-no-files-found: error
+
+      - name: Commit coordinate checkpoint to branch
+        if: inputs.commit_results
+        env:
+          RESULT_BRANCH: ${{ github.ref_name }}
+          REF_TYPE: ${{ github.ref_type }}
+          IDS_FILE: ${{ inputs.ids_file }}
+          BASE_FILE: ${{ inputs.base_file }}
+          EMIS_FIELD: ${{ inputs.emis_field }}
+        run: |
+          if [ "$REF_TYPE" != "branch" ]; then
+            echo "::error::Select a branch, not a tag, to commit results."
+            exit 1
+          fi
+
+          # Refresh before staging to include concurrent phase-1/data commits.
+          cp data/school_coords.jsonl "$RUNNER_TEMP/coords-new.jsonl"
+          git restore --worktree -- data/school_coords.jsonl 2>/dev/null || rm -f data/school_coords.jsonl
+          git pull --ff-only origin "$RESULT_BRANCH"
+
+          python -m sis.coords_ci finalize --ids "$IDS_FILE" --base "$BASE_FILE" \
+            --parts "$RUNNER_TEMP/coords-new.jsonl" --emis-field "$EMIS_FIELD"
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -f data/school_coords.jsonl
+
+          if git diff --staged --quiet; then
+            echo "No coordinate changes to commit."
+          else
+            git commit -m "chore(data): update school coordinates [skip ci]"
+            git push origin "HEAD:$RESULT_BRANCH"
+          fi

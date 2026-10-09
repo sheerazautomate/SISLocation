@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import math
 import os
 import sys
 from typing import Any
@@ -143,8 +144,12 @@ def write_outputs(rows: list[dict[str, Any]], out_prefix: str, geojson: bool = T
                                if k not in ("latitude", "longitude")},
             }
             for r in rows
-            if isinstance(r.get("latitude"), (int, float))
+            if r.get("status") == "ok"
+            and isinstance(r.get("latitude"), (int, float))
             and isinstance(r.get("longitude"), (int, float))
+            and math.isfinite(r["latitude"]) and math.isfinite(r["longitude"])
+            and -90 <= r["latitude"] <= 90 and -180 <= r["longitude"] <= 180
+            and (r["latitude"], r["longitude"]) != (0, 0)
         ]
         with open(out_prefix + ".geojson", "w", encoding="utf-8") as fh:
             json.dump({"type": "FeatureCollection", "features": features}, fh,

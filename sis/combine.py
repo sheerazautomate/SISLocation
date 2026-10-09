@@ -25,14 +25,16 @@ def combine(patterns: list[str], key: str, out_path: str) -> tuple[int, dict[str
     for path in files:
         if not os.path.isfile(path) or os.path.abspath(path) == os.path.abspath(out_path):
             continue
-        with open(path, "r", encoding="utf-8") as fh:
+        with open(path, "rb") as fh:
             for line in fh:
                 line = line.strip()
                 if not line:
                     continue
                 try:
                     rec = json.loads(line)
-                except json.JSONDecodeError:
+                except (ValueError, UnicodeDecodeError):
+                    continue
+                if not isinstance(rec, dict):
                     continue
                 k = rec.get(key)
                 if k is None:

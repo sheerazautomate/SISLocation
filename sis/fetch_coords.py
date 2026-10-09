@@ -11,11 +11,14 @@ and schools with no stored location yield a blank/zero coordinate - all handled.
 from __future__ import annotations
 
 import argparse
-import json
+import math
 import os
 import re
 import sys
+from html import unescape
+from html.parser import HTMLParser
 from typing import Any
+from urllib.parse import unquote, urlparse
 
 from .common import (
     BASE_URL,
@@ -30,14 +33,12 @@ from .common import (
 
 ENDPOINT = BASE_URL + "/transfer/show_google_map_school/{sid}"
 
-# -73.9, 40.7 style pair inside a maps URL parameter
-_COORD = r"(-?\d{1,3}\.\d+|-?\d{1,3})\s*,\s*(-?\d{1,3}\.\d+|-?\d{1,3})"
-COORD_PARAM_RE = re.compile(r"[?&](?:saddr|daddr|q|ll|center|destination)=" + _COORD, re.I)
-COORD_AT_RE = re.compile(r"/@" + _COORD)
-META_REFRESH_RE = re.compile(
-    r"""<meta[^>]+http-equiv=["']?refresh["']?[^>]+content=["'][^"']*url=([^"'>\s]+)""",
-    re.I,
-)
+# Accept encoded separators and signed integers/decimals, but never partial
+# numeric matches (e.g. interpreting longitude 740 as 74).
+_COORD = r"([+-]?(?:\d+(?:\.\d+)?|\.\d+))\s*,\s*([+-]?(?:\d+(?:\.\d+)?|\.\d+))"
+_END = r"(?=$|[\s,&#/\\\"'<>?])"
+COORD_PARAM_RE = re.compile(r"[?&](?:saddr|daddr|q|ll|center|destination)=" + _COORD + _END, re.I)
+COORD_AT_RE = re.compile(r"/@" + _COORD + _END)
 JS_LOCATION_RE = re.compile(
     r"""(?:window\.)?(?:location(?:\.href)?|location\.replace\s*\()\s*=?\s*["']([^"']+)["']""",
     re.I,
@@ -51,28 +52,66 @@ LAT_RANGE = (27.0, 34.5)
 LON_RANGE = (68.5, 76.0)
 
 
+def _decode(text: str) -> str:
+    return unquote(unescape(text)).replace(r"\/", "/")
+
+
 def parse_coords(text: str) -> tuple[float, float] | None:
+    text = _decode(text)
     for pattern in (COORD_PARAM_RE, COORD_AT_RE):
         m = pattern.search(text)
         if m:
-            try:
-                return float(m.group(1)), float(m.group(2))
-            except ValueError:
-                continue
+            return float(m.group(1)), float(m.group(2))
     return None
+
+
+class _MetaRedirect(HTMLParser):
+    """Parse meta attributes regardless of order, quote style or URL spaces."""
+
+    def __init__(self):
+        super().__init__()
+        self.target: str | None = None
+
+    def handle_starttag(self, tag, attrs):
+        if tag.lower() != "meta":
+            return
+        attrs = dict(attrs)
+        if (attrs.get("http-equiv") or "").lower() != "refresh":
+            return
+        m = re.search(r"url\s*=\s*(.+)", attrs.get("content") or "", re.I)
+        if m:
+            self.target = m.group(1).strip().strip("\"'")
 
 
 def _redirect_target(resp) -> str | None:
     """Find where the page wants to send us: header, meta refresh, or JS."""
     loc = resp.headers.get("Location")
     if loc:
-        return loc
-    body = resp.text or ""
-    for pattern in (META_REFRESH_RE, JS_LOCATION_RE, ANY_MAPS_URL_RE):
+        return _decode(loc)
+    body = _decode(resp.text or "")
+    parser = _MetaRedirect()
+    parser.feed(body)
+    if parser.target:
+        return parser.target
+    for pattern in (JS_LOCATION_RE, ANY_MAPS_URL_RE):
         m = pattern.search(body)
         if m:
             return m.group(1) if m.groups() else m.group(0)
     return None
+
+
+def _is_maps_url(target: str) -> bool:
+    try:
+        parsed = urlparse(target)
+        host = parsed.hostname or ""
+    except ValueError:
+        return False
+    google_host = re.fullmatch(
+        r"(?:www\.|maps\.)?google\.(?:com|[a-z]{2}|(?:co|com)\.[a-z]{2})", host
+    )
+    return bool(google_host) and parsed.scheme in ("http", "https") and (
+        parsed.path == "/maps" or parsed.path.startswith("/maps/") or host.startswith("maps.")
+    )
 
 
 def resolve_coords(
@@ -101,12 +140,17 @@ def resolve_coords(
         rec["error"] = f"{type(exc).__name__}: {exc}"
         return rec
 
-    if resp.status_code >= 500:
+    if resp.status_code >= 400:
         rec["status"] = "error"
         rec["error"] = f"HTTP {resp.status_code}"
         return rec
 
     target = _redirect_target(resp)
+    if target and not _is_maps_url(target):
+        # An auth/error/internal redirect is not proof that a school lacks a map.
+        # Do not follow it (or an external Google request); keep it retryable.
+        rec.update(status="error", error="unexpected non-map redirect", map_url=target)
+        return rec
     source = target or (resp.text or "")
     coords = parse_coords(source)
 
@@ -122,7 +166,12 @@ def resolve_coords(
     rec["longitude"] = lon
     rec["map_url"] = target
 
-    if lat == 0 and lon == 0:
+    if not (-90 <= lat <= 90 and -180 <= lon <= 180):
+        rec["status"] = "error"
+        rec["error"] = "invalid coordinates"
+        rec.pop("latitude")
+        rec.pop("longitude")
+    elif lat == 0 and lon == 0:
         rec["status"] = "missing"
         rec["error"] = "zero coordinates"
     elif not (LAT_RANGE[0] <= lat <= LAT_RANGE[1] and LON_RANGE[0] <= lon <= LON_RANGE[1]):
@@ -154,7 +203,8 @@ def load_id_rows(path: str) -> list[dict[str, Any]]:
                 "markaz_id": rec.get("markaz_id") or rec.get("s_markaz_idFk"),
             }
         )
-    return rows
+    # Stable shard membership even if phase-1 concurrent completion order changes.
+    return sorted(rows, key=lambda r: r["school_id"])
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -176,6 +226,13 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--insecure", action="store_true")
     add_shard_args(ap)
     args = ap.parse_args(argv)
+
+    if (args.workers < 1 or not math.isfinite(args.timeout) or args.timeout <= 0
+            or args.retries < 0 or not math.isfinite(args.delay) or args.delay < 0
+            or args.limit < 0):
+        ap.error("workers/timeout must be positive; retries/delay/limit must be non-negative")
+    if args.shards < 1 or not 0 <= args.shard < args.shards:
+        ap.error("shards must be positive and shard must be in [0, shards)")
 
     if args.insecure:
         import urllib3
