@@ -15,6 +15,7 @@
 # Usage:
 #   ./ci/install-workflow.sh              # install onto the default branch (recommended)
 #   ./ci/install-workflow.sh --here       # install onto the current branch instead
+#   ./ci/install-workflow.sh --phase2     # install the coordinate workflow
 #
 set -euo pipefail
 
@@ -23,10 +24,18 @@ cd "$(git rev-parse --show-toplevel)"
 SRC="ci/fetch-dtms.yml.txt"
 DEST=".github/workflows/fetch-dtms.yml"
 MODE="default-branch"
+TITLE="Phase 1 - Fetch DTMS IDs"
+PHASE="phase-1 DTMS"
 
 for arg in "$@"; do
   case "$arg" in
     --here) MODE="here" ;;
+    --phase2)
+      SRC="ci/fetch-coords.yml.txt"
+      DEST=".github/workflows/fetch-coords.yml"
+      TITLE="Phase 2 - Fetch School Coordinates"
+      PHASE="phase-2 coordinates"
+      ;;
     -h|--help) sed -n '2,20p' "$0"; exit 0 ;;
     *) echo "Unknown option: $arg" >&2; exit 2 ;;
   esac
@@ -60,7 +69,7 @@ git add "$DEST"
 if git diff --staged --quiet; then
   echo "Workflow already up to date on '$TARGET'."
 else
-  git commit -m "ci: add phase-1 DTMS extraction workflow"
+  git commit -m "ci: add $PHASE extraction workflow"
   git push origin "HEAD:$TARGET"
   echo "Pushed to '$TARGET'."
 fi
@@ -69,22 +78,18 @@ cat <<EOF
 
 Done. Next steps:
 
-  1. Commit your base file to the SAME branch you will run from ('$TARGET'),
-     because the runner checks out that branch:
+  1. Ensure the base file (and data/school_ids.jsonl for phase 2) plus the
+     pipeline Python code are committed to the branch you select for the run.
 
-       git add -f "data/Base Schools.json"
-       git commit -m "data: add base schools file"
-       git push origin $TARGET
-
-  2. Start it from the UI:  Actions -> "Phase 1 - Fetch DTMS IDs" -> Run workflow
+  2. Start it from the UI:  Actions -> "$TITLE" -> Run workflow
      ...or from the CLI:
 
-       gh workflow run fetch-dtms.yml --ref $TARGET -f limit=20     # smoke test
-       gh workflow run fetch-dtms.yml --ref $TARGET                 # full 38K run
+       gh workflow run $(basename "$DEST") --ref $TARGET -f limit=20     # smoke test
+       gh workflow run $(basename "$DEST") --ref $TARGET                 # full 38K run
 
   3. Watch it:
 
-       gh run watch \$(gh run list --workflow=fetch-dtms.yml -L1 --json databaseId -q '.[0].databaseId')
+       gh run watch \$(gh run list --workflow=$(basename "$DEST") -L1 --json databaseId -q '.[0].databaseId')
 
 EOF
 

@@ -89,6 +89,83 @@ times out or a runner dies, just run it again. To repair errored rows, re-run wi
 Download the result from the run's **Artifacts** section (`school_ids`), or pull the
 branch if `commit_results` was on.
 
+## Phase 2 on GitHub Actions — coordinates and final exports
+
+Once Phase 1 has produced `data/school_ids.jsonl`, Phase 2 requests
+`/transfer/show_google_map_school/<school_id>` and extracts the coordinates from
+its Maps redirect **without visiting Google**. Only successful, unique school IDs
+are fetched; missing/error Phase-1 records remain visible in the merged exports.
+
+### Install and smoke-test
+
+The workflow is shipped as **`ci/fetch-coords.yml.txt`** because the Arena GitHub App
+cannot push workflow files. On your own machine, with your usual GitHub credentials:
+
+```bash
+./ci/install-workflow.sh --phase2
+```
+
+Alternatively, use GitHub's file editor on `main`: create
+`.github/workflows/fetch-coords.yml`, paste the template, and commit it. The workflow
+must exist on the default branch for the **Run workflow** button to appear. The
+selected run branch must also contain the workflow and the updated `sis/` code;
+merge the Phase-2 implementation before running on `main`.
+
+In **Actions → Phase 2 - Fetch School Coordinates → Run workflow**, select the
+branch containing your Phase-1 output and start with **limit = 20**. With ten shards
+this fetches up to 200 pending schools, not the entire dataset.
+
+```bash
+# After installation / merging the Phase-2 code:
+gh workflow run fetch-coords.yml --ref main -f limit=20
+# Inspect the summary and school_locations artifact; then run all remaining IDs:
+gh workflow run fetch-coords.yml --ref main
+```
+
+### Inputs and results
+
+| Input | Default | Meaning |
+| --- | --- | --- |
+| `ids_file` | `data/school_ids.jsonl` | Committed Phase-1 output |
+| `base_file` | `data/Base Schools.json` | Base rows carried into final exports |
+| `shards` | `10` | 1–20 shards; at most 10 execute concurrently |
+| `workers` | `4` | 1–16 workers per runner |
+| `delay` | `0.25` | Random request jitter in seconds |
+| `limit` | `0` | Pending rows per shard; `20` for a smoke test |
+| `emis_field` | *(blank)* | Auto-detect the EMIS column for merging |
+| `retry_errors` | off | Retry failed HTTP/network/invalid-coordinate lookups |
+| `retry_missing` | off | Retry schools without stored coordinates |
+| `commit_results` | on | Commit only `data/school_coords.jsonl` to the run branch |
+
+Defaults allow up to **40 concurrent requests**. Lower workers or shards if SIS
+starts returning rate-limit/server errors. TLS verification stays enabled.
+
+The **`school_locations` artifact** (90-day retention) contains:
+
+- `school_coords.jsonl` — resumable coordinate checkpoint;
+- `schools_final.json`, `schools_final.csv`, `schools_final.geojson` — merged base
+  rows, IDs, coordinates, and final statuses. GeoJSON excludes missing, zero and
+  globally invalid coordinates; valid locations outside Punjab are kept and flagged.
+
+The summary reports processed/pending IDs, status counts, out-of-range locations,
+and merged-school coverage. Smoke tests and failed shards intentionally produce
+**partial exports** with `coords_pending` rows, not fabricated locations.
+
+### Resume safely
+
+Each shard seeds from **committed coordinates plus its cached partial results**.
+Caches are isolated by branch, school-ID set and shard layout. Re-running skips
+recorded IDs unless the relevant retry switch is enabled. The final combine includes
+the committed baseline, so changing shard count or losing a shard cannot erase it.
+Successful records beat missing/error records, and all run-attempt artifacts are
+kept separately to prevent a shorter retry from overwriting earlier progress.
+
+Fetch steps leave time for best-effort cache/artifact saves even on failure. A hard
+runner loss/cancellation can still lose progress not yet uploaded or committed;
+re-run to recover. Caches may be evicted. If `commit_results` is off, download the
+checkpoint before artifact expiry and commit it (or use it locally) for durable resume.
+Final exports remain artifacts rather than large generated files in Git.
+
 ## Quick start (local)
 
 ```bash
@@ -123,7 +200,7 @@ Codes are de-duplicated and `32230183.0`-style spreadsheet artifacts are normali
 
 Both phases append to JSONL and **skip work already recorded**, so a run interrupted at
 row 20,000 picks up where it left off — just re-run the same command. A torn final line
-from a hard kill is tolerated.
+from a hard kill is repaired before appending new results.
 
 ```bash
 python run.py ids    -i "data/Base Schools.json" -o data/school_ids.jsonl --retry-errors
@@ -177,7 +254,7 @@ The `.geojson` contains only rows with real coordinates, ready to drop into QGIS
 ## Tests
 
 ```bash
-python run.py test     # 22 offline tests, no network needed
+python run.py test     # offline regression suite, no network needed
 ```
 
 ## Combining shards manually

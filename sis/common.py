@@ -94,15 +94,17 @@ class JsonlStore:
         done: dict[str, dict[str, Any]] = {}
         if not os.path.exists(self.path):
             return done
-        with open(self.path, "r", encoding="utf-8") as fh:
+        with open(self.path, "rb") as fh:
             for line in fh:
                 line = line.strip()
                 if not line:
                     continue
                 try:
                     rec = json.loads(line)
-                except json.JSONDecodeError:
-                    continue  # tolerate a torn final line from a hard kill
+                except (ValueError, UnicodeDecodeError):
+                    continue  # tolerate torn JSON or UTF-8 from a hard kill
+                if not isinstance(rec, dict):
+                    continue
                 k = rec.get(self.key)
                 if k is not None:
                     done[str(k)] = rec
@@ -110,6 +112,32 @@ class JsonlStore:
 
     def __enter__(self) -> "JsonlStore":
         os.makedirs(os.path.dirname(os.path.abspath(self.path)) or ".", exist_ok=True)
+        # A killed writer may leave an unterminated JSON/UTF-8 fragment. Merely
+        # ignoring it on load would glue the first new record onto that fragment.
+        # Repair just the tail before opening in append mode.
+        with open(self.path, "a+b") as fh:
+            end = fh.tell()
+            if end:
+                pos = end
+                tail = b""
+                while pos:
+                    size = min(pos, 4096)
+                    pos -= size
+                    fh.seek(pos)
+                    tail = fh.read(size) + tail
+                    newline = tail.rfind(b"\n")
+                    if newline >= 0:
+                        pos += newline + 1
+                        tail = tail[newline + 1:]
+                        break
+                if tail:
+                    try:
+                        json.loads(tail)
+                    except (ValueError, UnicodeDecodeError):
+                        fh.truncate(pos)
+                    else:
+                        fh.seek(0, os.SEEK_END)
+                        fh.write(b"\n")
         self._fh = open(self.path, "a", encoding="utf-8")
         return self
 
