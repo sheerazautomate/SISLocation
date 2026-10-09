@@ -1,0 +1,92 @@
+# Publishes the school dashboard (dashboard/) to GitHub Pages.
+#
+# Installed onto the default branch by:  ./ci/install-workflow.sh --dashboard
+# Pages must be enabled once: Settings -> Pages -> Build and deployment -> Source:
+# "GitHub Actions".
+#
+# Why three triggers:
+#   workflow_run  Phase 2 commits coordinates with "[skip ci]", so a push trigger never
+#                 fires after a coordinate update. This trigger rebuilds once Phase 2 ends.
+#   push          Changes to the dashboard, the pipeline code, or the committed data.
+#   workflow_dispatch  Manual rebuild.
+
+name: Dashboard - Publish to GitHub Pages
+
+on:
+  workflow_dispatch:
+  workflow_run:
+    workflows: ["Phase 2 - Fetch School Coordinates"]
+    types: [completed]
+    branches: [main]
+  push:
+    branches: [main]
+    paths:
+      - "dashboard/**"
+      - "sis/**"
+      - "run.py"
+      - "data/Base Schools.json"
+      - "data/school_ids.jsonl"
+      - "data/school_coords.jsonl"
+      - ".github/workflows/dashboard-pages.yml"
+
+permissions:
+  contents: read
+
+# One Pages deployment at a time. Queued runs wait instead of cancelling a deploy.
+concurrency:
+  group: pages-dashboard
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build the site
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # On workflow_run, only publish when Phase 2 finished successfully.
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Python dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run offline tests
+        run: python run.py test
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      # The JS tests also check the built dataset, so build it into dashboard/data first.
+      - name: Build dataset and run dashboard tests
+        run: |
+          python run.py dashboard
+          npm --prefix dashboard test
+
+      - name: Build the Pages site
+        run: python run.py dashboard --site _site
+
+      - uses: actions/configure-pages@v5
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+  deploy:
+    name: Deploy to GitHub Pages
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy
+        id: deployment
+        uses: actions/deploy-pages@v4
