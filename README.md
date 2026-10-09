@@ -290,10 +290,12 @@ Things to know:
 ### Publish to GitHub Pages
 
 The workflow file cannot be pushed by the Arena app (no `workflows` permission), so it
-ships as `ci/dashboard-pages.yml.txt`. One time:
+ships as `ci/dashboard-pages.yml.txt`. One time, in this order:
 
 1. On GitHub: **Settings → Pages → Build and deployment → Source: GitHub Actions**.
-2. From a checkout of `main`: `./ci/install-workflow.sh --dashboard`.
+2. Merge the dashboard branch into `main`. The workflow builds from `main`.
+3. From a checkout of `main`: `./ci/install-workflow.sh --dashboard`. Installing the file
+   pushes it to `main`, which starts the first build and deploy.
 
 After that the site rebuilds after each successful **Phase 2 - Fetch School Coordinates**
 run, on pushes that change `dashboard/`, `sis/`, `run.py` or the data files, and on demand:

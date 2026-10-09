@@ -90,18 +90,22 @@ fi
 if [ "$KIND" = "dashboard" ]; then
 cat <<EOF
 
-Done. Next steps (one time):
+Done. The workflow is now on '$TARGET'. Three things to check:
 
   1. Turn on GitHub Pages: Settings -> Pages -> Build and deployment ->
-     Source: "GitHub Actions".
+     Source: "GitHub Actions". The push above has already started a build,
+     and the deploy step needs this setting.
 
-  2. The site rebuilds after each successful Phase 2 run on '$TARGET', after
-     pushes that change the dashboard or the data, and on demand:
+  2. The site builds from '$TARGET', so the dashboard code must be merged
+     there too. A build before that fails. Re-run it after the merge.
+
+  3. The site rebuilds after each successful Phase 2 run, after pushes that
+     change the dashboard or the data, and on demand:
 
        gh workflow run $(basename "$DEST") --ref $TARGET
 
-  3. The site address is https://<owner>.github.io/<repo>/. The workflow log of
-     the deploy job prints the exact URL.
+     The site address is https://<owner>.github.io/<repo>/. The deploy job's
+     log prints the exact URL.
 
 EOF
 else
