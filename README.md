@@ -251,6 +251,67 @@ columns from the base file carried through. Final `status` is one of:
 Rows outside the Punjab bounding box are kept but flagged `out_of_range: true`.
 The `.geojson` contains only rows with real coordinates, ready to drop into QGIS or Kepler.
 
+## Dashboard
+
+A static site (`dashboard/`) for the collected school data. It has three parts:
+
+- **Find a school by EMIS.** The school's card appears, the scope dropdowns jump to its
+  district, wing, tehsil and markaz, and its pin is highlighted.
+- **Browse by scope.** District → wing → tehsil → markaz. Each dropdown shows only the
+  options inside the level above it, with school counts. The table lists the schools in
+  the scope, with sorting, a filter box, an "only data issues" toggle, and CSV download.
+- **Map.** Clustered pins for the schools in the scope, on OpenStreetMap tiles. Each
+  pin has a popup with a Google Maps link.
+
+The page keeps its state in the URL, so a link such as
+`#d=<district id>&w=SE&t=<tehsil id>&m=<markaz id>&e=<EMIS>` opens the same view.
+District, tehsil and markaz are SIS ids, so the links keep working even if a name is respelled.
+
+```bash
+python run.py dashboard              # build dashboard/data/schools.json (not committed)
+python run.py dashboard --serve      # ...and serve dashboard/ on http://0.0.0.0:8000
+```
+
+It reads the three committed data files (`data/Base Schools.json`,
+`data/school_ids.jsonl`, `data/school_coords.jsonl`). Leaflet and markercluster are
+vendored in `dashboard/vendor/`, so the page loads no scripts from a CDN.
+
+Things to know:
+
+- The EMIS search and the table use the snapshot in the build. They do not query the live SIS.
+- Schools with no coordinates, schools not found in SIS, and schools outside Punjab are
+  shown in the table with a status badge. They are not drawn on the map.
+- Five or more schools that report the same coordinates are listed under **Data issues**.
+  Smaller shared points are not listed, but their pins still spread apart when zoomed in.
+- Wing labels: `SE` = Secondary Education (SE), `W-EE` = Women's Elementary Education
+  (W-EE), `M-EE` = Male Elementary Education (M-EE).
+- Unlabeled numeric columns in the base file are kept in the data but not shown.
+
+### Publish to GitHub Pages
+
+The workflow file cannot be pushed by the Arena app (no `workflows` permission), so it
+ships as `ci/dashboard-pages.yml.txt`. One time:
+
+1. On GitHub: **Settings → Pages → Build and deployment → Source: GitHub Actions**.
+2. From a checkout of `main`: `./ci/install-workflow.sh --dashboard`.
+
+After that the site rebuilds after each successful **Phase 2 - Fetch School Coordinates**
+run, on pushes that change `dashboard/`, `sis/`, `run.py` or the data files, and on demand:
+
+```bash
+gh workflow run dashboard-pages.yml --ref main
+```
+
+Coordinate commits carry `[skip ci]`, so the rebuild after Phase 2 is triggered by
+`workflow_run`, not by a push.
+
+### Dashboard tests
+
+```bash
+python run.py test              # includes tests/test_dashboard.py (builder rules and data invariants)
+npm --prefix dashboard test     # JavaScript tests for the scope, search, sort and CSV logic (Node 21+)
+```
+
 ## Tests
 
 ```bash

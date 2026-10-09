@@ -15,3 +15,7 @@ __pycache__/
 .venv/
 venv/
 .pytest_cache/
+
+# Dashboard build output (python run.py dashboard). CI rebuilds these, so do not commit them.
+dashboard/data/
+_site/
