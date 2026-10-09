@@ -1,0 +1,13 @@
+{
+  "name": "sis-school-dashboard",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Static dashboard for SIS school locations. Leaflet and markercluster are vendored under vendor/, so the page loads no scripts from a CDN.",
+  "type": "module",
+  "engines": {
+    "node": ">=21"
+  },
+  "scripts": {
+    "test": "node --test \"test/*.test.mjs\""
+  }
+}

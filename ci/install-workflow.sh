@@ -16,6 +16,7 @@
 #   ./ci/install-workflow.sh              # install onto the default branch (recommended)
 #   ./ci/install-workflow.sh --here       # install onto the current branch instead
 #   ./ci/install-workflow.sh --phase2     # install the coordinate workflow
+#   ./ci/install-workflow.sh --dashboard  # install the GitHub Pages dashboard workflow
 #
 set -euo pipefail
 
@@ -26,6 +27,7 @@ DEST=".github/workflows/fetch-dtms.yml"
 MODE="default-branch"
 TITLE="Phase 1 - Fetch DTMS IDs"
 PHASE="phase-1 DTMS"
+KIND="extract"
 
 for arg in "$@"; do
   case "$arg" in
@@ -36,7 +38,14 @@ for arg in "$@"; do
       TITLE="Phase 2 - Fetch School Coordinates"
       PHASE="phase-2 coordinates"
       ;;
-    -h|--help) sed -n '2,20p' "$0"; exit 0 ;;
+    --dashboard)
+      SRC="ci/dashboard-pages.yml.txt"
+      DEST=".github/workflows/dashboard-pages.yml"
+      TITLE="Dashboard - Publish to GitHub Pages"
+      PHASE="dashboard"
+      KIND="dashboard"
+      ;;
+    -h|--help) awk 'NR>1 && /^#/ {sub(/^# ?/, ""); print; next} NR>1 {exit}' "$0"; exit 0 ;;
     *) echo "Unknown option: $arg" >&2; exit 2 ;;
   esac
 done
@@ -69,11 +78,37 @@ git add "$DEST"
 if git diff --staged --quiet; then
   echo "Workflow already up to date on '$TARGET'."
 else
-  git commit -m "ci: add $PHASE extraction workflow"
+  if [ "$KIND" = "dashboard" ]; then
+    git commit -m "ci: add dashboard Pages workflow"
+  else
+    git commit -m "ci: add $PHASE extraction workflow"
+  fi
   git push origin "HEAD:$TARGET"
   echo "Pushed to '$TARGET'."
 fi
 
+if [ "$KIND" = "dashboard" ]; then
+cat <<EOF
+
+Done. The workflow is now on '$TARGET'. Three things to check:
+
+  1. Turn on GitHub Pages: Settings -> Pages -> Build and deployment ->
+     Source: "GitHub Actions". The push above has already started a build,
+     and the deploy step needs this setting.
+
+  2. The site builds from '$TARGET', so the dashboard code must be merged
+     there too. A build before that fails. Re-run it after the merge.
+
+  3. The site rebuilds after each successful Phase 2 run, after pushes that
+     change the dashboard or the data, and on demand:
+
+       gh workflow run $(basename "$DEST") --ref $TARGET
+
+     The site address is https://<owner>.github.io/<repo>/. The deploy job's
+     log prints the exact URL.
+
+EOF
+else
 cat <<EOF
 
 Done. Next steps:
@@ -92,6 +127,7 @@ Done. Next steps:
        gh run watch \$(gh run list --workflow=$(basename "$DEST") -L1 --json databaseId -q '.[0].databaseId')
 
 EOF
+fi
 
 if [ "$TARGET" != "$CURRENT" ]; then
   echo "Returning to '$CURRENT'."

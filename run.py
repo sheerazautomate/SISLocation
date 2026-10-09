@@ -5,6 +5,7 @@
     python run.py coords  -i data/school_ids.jsonl    -o data/school_coords.jsonl
     python run.py merge   -b "data/Base Schools.json" -o data/schools_final
     python run.py all     -b "data/Base Schools.json"
+    python run.py dashboard [--serve]     # build dashboard/data/schools.json
     python run.py test
 """
 
@@ -35,6 +36,10 @@ def main(argv: list[str]) -> int:
         return run(rest)
     if cmd == "merge":
         from sis.merge import main as run
+
+        return run(rest)
+    if cmd == "dashboard":
+        from sis.dashboard_data import main as run
 
         return run(rest)
     if cmd == "test":

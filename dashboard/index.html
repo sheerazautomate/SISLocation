@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SIS school locations · Punjab</title>
+  <meta name="description" content="Find a school by EMIS, browse schools by district, wing, tehsil and markaz, and see them on a map.">
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="vendor/leaflet/leaflet.css">
+  <link rel="stylesheet" href="vendor/markercluster/MarkerCluster.css">
+  <link rel="stylesheet" href="vendor/markercluster/MarkerCluster.Default.css">
+  <link rel="stylesheet" href="css/styles.css">
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to content</a>
+
+  <header class="site-header">
+    <div>
+      <h1>School locations</h1>
+      <p class="muted">Punjab · SIS snapshot built <time id="built-at"></time></p>
+    </div>
+    <p class="header-stats" id="header-stats"></p>
+  </header>
+
+  <main id="main">
+    <p class="fatal" id="fatal" hidden></p>
+
+    <div class="top-row">
+      <section class="card" aria-labelledby="find-title">
+        <h2 id="find-title">Find a school by EMIS</h2>
+        <form class="emis-form" id="emis-form" role="search">
+          <label class="sr-only" for="emis-input">EMIS code</label>
+          <input id="emis-input" type="search" inputmode="numeric" autocomplete="off" placeholder="EMIS code, e.g. 37110028">
+          <button class="btn primary" type="submit">Find</button>
+          <button class="btn" type="button" id="emis-clear">Clear</button>
+        </form>
+        <p class="muted small" id="emis-help"></p>
+        <p class="message" id="emis-message" role="status" aria-live="polite"></p>
+        <article class="school-card" id="school-card" hidden></article>
+      </section>
+
+      <section class="card" aria-labelledby="scope-title">
+        <div class="card-head">
+          <h2 id="scope-title">Browse by scope</h2>
+          <button class="btn ghost" type="button" id="reset">Reset all</button>
+        </div>
+        <div class="selects">
+          <label>District <select id="sel-district"></select></label>
+          <label>Wing <select id="sel-wing"></select></label>
+          <label>Tehsil <select id="sel-tehsil"></select></label>
+          <label>Markaz <select id="sel-markaz"></select></label>
+        </div>
+        <p class="scope-line" id="scope-line" aria-live="polite"></p>
+        <ul class="kpis" id="kpis"></ul>
+      </section>
+    </div>
+
+    <div class="layout">
+      <section class="card table-card" aria-labelledby="table-title">
+        <div class="card-head">
+          <h2 id="table-title">Schools <span class="muted" id="table-count"></span></h2>
+          <button class="btn" type="button" id="download" title="Downloads every row that matches the filters and sort, not just this page.">Download CSV</button>
+        </div>
+        <div class="table-tools">
+          <input id="table-filter" type="search" placeholder="Filter this list by EMIS or name" aria-label="Filter this list by EMIS or name">
+          <label class="check"><input type="checkbox" id="only-issues"> Only data issues</label>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th scope="col"><button class="sort" type="button" data-sort="emis">EMIS</button></th>
+                <th scope="col"><button class="sort" type="button" data-sort="name">School name</button></th>
+                <th scope="col" class="num"><button class="sort" type="button" data-sort="lat">Latitude</button></th>
+                <th scope="col" class="num"><button class="sort" type="button" data-sort="lon">Longitude</button></th>
+                <th scope="col"><button class="sort" type="button" data-sort="status">Status</button></th>
+              </tr>
+            </thead>
+            <tbody id="rows"></tbody>
+          </table>
+        </div>
+        <nav class="pager" id="pager" aria-label="Table pages"></nav>
+      </section>
+
+      <section class="card map-card" aria-labelledby="map-title">
+        <h2 class="sr-only" id="map-title">Map of schools in the selected scope</h2>
+        <div id="map"></div>
+        <p class="map-note muted small" id="map-note"></p>
+      </section>
+    </div>
+
+    <details class="card issues" id="issues">
+      <summary id="issues-summary">Data issues</summary>
+      <div class="issues-body" id="issues-body"></div>
+    </details>
+  </main>
+
+  <footer class="site-footer">
+    <p>Coordinates are as reported by SIS. Map tiles &copy; OpenStreetMap contributors.</p>
+    <p>The EMIS search and this list cover the snapshot above, not the live SIS.</p>
+  </footer>
+
+  <noscript><p class="fatal">This dashboard needs JavaScript to run.</p></noscript>
+
+  <script src="vendor/leaflet/leaflet.js"></script>
+  <script src="vendor/markercluster/leaflet.markercluster.js"></script>
+  <script type="module" src="js/app.js"></script>
+</body>
+</html>
